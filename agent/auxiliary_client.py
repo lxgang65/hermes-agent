@@ -162,7 +162,11 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix
+        # Keep named custom providers intact. Stripping ``custom:`` turns
+        # entries like ``custom:openai-codex`` into the built-in
+        # ``openai-codex`` OAuth provider, which breaks API-key backed
+        # endpoints and explicit ``auxiliary.vision.provider: main`` routing.
+        return f"custom:{suffix}"
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":

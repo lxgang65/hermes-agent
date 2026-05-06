@@ -620,6 +620,8 @@ def _collect_gateway_skill_entries(
             if not name:
                 continue
             desc = info.get("description", "")
+            if not isinstance(desc, str):
+                desc = " ".join(str(part) for part in desc) if isinstance(desc, (list, tuple)) else str(desc)
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             skill_triples.append((name, desc, cmd_key))
