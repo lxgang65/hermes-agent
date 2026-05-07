@@ -942,6 +942,7 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
+        default_headers: Dict[str, str] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1020,6 +1021,7 @@ class AIAgent:
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
+        self._configured_default_headers = self._coerce_default_headers(default_headers)
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
         self.base_url = base_url or ""
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
@@ -1344,7 +1346,12 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                self._anthropic_client = build_anthropic_client(
+                    effective_key,
+                    base_url,
+                    timeout=_provider_timeout,
+                    default_headers=self._configured_default_headers,
+                )
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -1468,6 +1475,11 @@ class AIAgent:
                         "select a provider, or run `hermes setup` for first-time "
                         "configuration."
                     )
+            merged_headers = self._merge_configured_default_headers(
+                client_kwargs.get("default_headers")
+            )
+            if merged_headers:
+                client_kwargs["default_headers"] = merged_headers
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
@@ -3525,6 +3537,7 @@ class AIAgent:
                         api_mode=_parent_runtime.get("api_mode") or None,
                         base_url=_parent_runtime.get("base_url") or None,
                         api_key=_parent_runtime.get("api_key") or None,
+                        default_headers=self._configured_default_headers,
                         credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                         enabled_toolsets=["memory", "skills"],
@@ -6045,6 +6058,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                default_headers=self._configured_default_headers,
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -6058,6 +6072,25 @@ class AIAgent:
         from agent.anthropic_adapter import _is_oauth_token
         self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
+
+    @staticmethod
+    def _coerce_default_headers(headers: Optional[Dict[str, Any]]) -> Dict[str, str]:
+        if not isinstance(headers, dict):
+            return {}
+        result: Dict[str, str] = {}
+        for key, value in headers.items():
+            name = str(key or "").strip()
+            if not name or value is None:
+                continue
+            result[name] = str(value)
+        return result
+
+    def _merge_configured_default_headers(
+        self, headers: Optional[Dict[str, Any]]
+    ) -> Dict[str, str]:
+        merged = self._coerce_default_headers(headers)
+        merged.update(getattr(self, "_configured_default_headers", {}) or {})
+        return merged
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
         from agent.auxiliary_client import _AI_GATEWAY_HEADERS, _OR_HEADERS
@@ -6083,6 +6116,11 @@ class AIAgent:
             )
         else:
             self._client_kwargs.pop("default_headers", None)
+        merged_headers = self._merge_configured_default_headers(
+            self._client_kwargs.get("default_headers")
+        )
+        if merged_headers:
+            self._client_kwargs["default_headers"] = merged_headers
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

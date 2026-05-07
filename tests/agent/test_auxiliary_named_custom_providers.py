@@ -60,7 +60,11 @@ class TestNormalizeVisionProvider:
 
     def test_custom_colon_named_provider_preserved(self):
         from agent.auxiliary_client import _normalize_vision_provider
-        assert _normalize_vision_provider("custom:beans") == "beans"
+        assert _normalize_vision_provider("custom:beans") == "custom:beans"
+
+    def test_custom_colon_builtin_name_not_rewritten(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("custom:openai-codex") == "custom:openai-codex"
 
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider
@@ -136,6 +140,28 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         assert model == "my-model"
         assert "beans.local" in str(client.base_url)
+
+    def test_named_custom_provider_headers(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "beans",
+                    "base_url": "http://beans.local/v1",
+                    "api_key": "k",
+                    "headers": {"User-Agent": "Mozilla/5.0"},
+                },
+            ],
+        })
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock(base_url="http://beans.local/v1", api_key="k")
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("beans", "my-model")
+
+        assert client is not None
+        assert model == "my-model"
+        assert mock_openai.call_args.kwargs["default_headers"] == {"User-Agent": "Mozilla/5.0"}
 
     def test_named_custom_provider_default_model(self, tmp_path):
         _write_config(tmp_path, {

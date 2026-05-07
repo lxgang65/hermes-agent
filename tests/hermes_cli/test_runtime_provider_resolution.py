@@ -1045,6 +1045,24 @@ def test_named_custom_provider_api_mode(monkeypatch):
     assert resolved["base_url"] == "http://localhost:8000/v1"
 
 
+def test_named_custom_provider_headers(monkeypatch):
+    """custom_providers entries with headers should propagate to runtime."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "sk-test",
+            "headers": {"User-Agent": "Mozilla/5.0"},
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+
+    assert resolved["headers"] == {"User-Agent": "Mozilla/5.0"}
+
+
 def test_named_custom_provider_without_api_mode_defaults(monkeypatch):
     """custom_providers entries without api_mode should default to chat_completions."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")

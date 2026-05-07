@@ -1014,14 +1014,17 @@ def merge_pending_message_event(
 # excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
 # means the request may have reached the server — retrying risks duplicate
 # delivery.  "connecttimeout" is safe because the connection was never
-# established.  Platforms that know a timeout is safe to retry should set
-# SendResult.retryable = True explicitly.
+# established.  "pool timeout" is also safe because HTTPX did not acquire a
+# connection and therefore did not send the request.
+# Platforms that know a timeout is safe to retry should set SendResult.retryable
+# = True explicitly.
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
     "connectionreset",
     "connectionrefused",
     "connecttimeout",
+    "pool timeout",
     "network",
     "broken pipe",
     "remotedisconnected",

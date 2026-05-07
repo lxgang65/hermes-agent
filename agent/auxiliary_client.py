@@ -119,6 +119,18 @@ def _extract_url_query_params(url: str):
     return url, None
 
 
+def _coerce_default_headers(headers: Any) -> Dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+    result: Dict[str, str] = {}
+    for key, value in headers.items():
+        name = str(key or "").strip()
+        if not name or value is None:
+            continue
+        result[name] = str(value)
+    return result
+
+
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
 
@@ -2137,6 +2149,7 @@ def resolve_provider_client(
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
             entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()
+            entry_headers = _coerce_default_headers(custom_entry.get("headers"))
             if custom_base:
                 final_model = _normalize_resolved_model(
                     model
@@ -2156,6 +2169,8 @@ def resolve_provider_client(
                     openai_base = _to_openai_base_url(custom_base)
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                if entry_headers:
+                    _extra2["default_headers"] = entry_headers
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s, api_mode=%s)",
                     provider, final_model, entry_api_mode or "chat_completions")
@@ -2165,7 +2180,11 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        real_client = build_anthropic_client(
+                            custom_key,
+                            custom_base,
+                            default_headers=entry_headers,
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="
@@ -2178,6 +2197,8 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        if entry_headers:
+                            _fb_extra["default_headers"] = entry_headers
                         client = OpenAI(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
                         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))

@@ -143,8 +143,11 @@ DEFAULT_AGENT_IDENTITY = (
 
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
-    "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+    "itself, answer directly from current context when it is a simple status, "
+    "path, or configuration confirmation. Load the `hermes-agent` skill only "
+    "when exact commands/docs are needed or you are about to modify Hermes "
+    "configuration, code, models, providers, tools, gateway, plugins, or skills. "
+    "Docs: https://hermes-agent.nousresearch.com/docs"
 )
 
 MEMORY_GUIDANCE = (
@@ -168,9 +171,11 @@ MEMORY_GUIDANCE = (
 )
 
 SESSION_SEARCH_GUIDANCE = (
-    "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "Use session_search only when the user explicitly asks about prior/last/old "
+    "conversations, asks to resume or recover historical context, or the current "
+    "answer truly depends on information missing from memory and files. Do not use "
+    "session_search for simple chat, status checks, current configuration, current "
+    "workspace paths, or questions answerable from the active context/files."
 )
 
 SKILLS_GUIDANCE = (
@@ -847,32 +852,26 @@ def build_skills_system_prompt(
                     index_lines.append(f"    - {name}")
 
         result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "## Skills (available)\n"
+            "Before replying, quickly scan the skills below. Load a skill only when the user "
+            "explicitly asks for it, or when the task materially depends on that skill's "
+            "workflow, APIs, commands, domain conventions, or quality checks. Do not load "
+            "skills for simple chat, status checks, path/config confirmations, or questions "
+            "answerable from current context, memory, known files, or one direct command. "
+            "Prefer answering directly over loading background context.\n"
+            "For Hermes Agent itself, load `hermes-agent` only when exact commands/docs are "
+            "needed or you are about to modify Hermes configuration, code, models, providers, "
+            "tools, gateway, plugins, or skills. For simple Hermes status/confirmation "
+            "questions, inspect the current files/processes directly and answer briefly.\n"
+            "If a loaded skill has issues, fix it with skill_manage(action='patch') when the "
+            "fix is in scope. After difficult/iterative tasks, offer to save the reusable "
+            "approach as a skill.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            "Proceed without loading a skill when no skill is necessary for the current answer."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

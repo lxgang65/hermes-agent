@@ -346,6 +346,19 @@ def _try_resolve_from_custom_pool(
         return None
 
 
+def _coerce_provider_headers(value: Any) -> Dict[str, str]:
+    """Return HTTP headers from config as a clean string dict."""
+    if not isinstance(value, dict):
+        return {}
+    headers: Dict[str, str] = {}
+    for key, header_value in value.items():
+        name = str(key or "").strip()
+        if not name or header_value is None:
+            continue
+        headers[name] = str(header_value)
+    return headers
+
+
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
@@ -394,6 +407,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    headers = _coerce_provider_headers(entry.get("headers"))
+                    if headers:
+                        result["headers"] = headers
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -412,6 +428,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        headers = _coerce_provider_headers(entry.get("headers"))
+                        if headers:
+                            result["headers"] = headers
                         return result
 
     # Fall back to custom_providers: list (legacy format)
@@ -455,6 +474,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        headers = _coerce_provider_headers(entry.get("headers"))
+        if headers:
+            result["headers"] = headers
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
@@ -512,6 +534,9 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        headers = _coerce_provider_headers(custom_provider.get("headers"))
+        if headers:
+            pool_result["headers"] = headers
         return pool_result
 
     api_key_candidates = [
@@ -536,6 +561,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    headers = _coerce_provider_headers(custom_provider.get("headers"))
+    if headers:
+        result["headers"] = headers
     return result
 
 

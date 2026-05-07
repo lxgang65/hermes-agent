@@ -122,6 +122,12 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+def _is_pool_timeout_error(error: object) -> bool:
+    """Return True when HTTPX failed before a request left the process."""
+    lowered = str(error).lower()
+    return "pool timeout" in lowered or "connection pool" in lowered
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -1166,6 +1172,21 @@ class TelegramAdapter(BasePlatformAdapter):
                         # indicates the request may have reached the server —
                         # retrying risks duplicate message delivery.
                         if _TimedOut and isinstance(send_err, _TimedOut):
+                            # PTB maps httpx.PoolTimeout to TimedOut, but the
+                            # request was not sent to Telegram. Retrying is
+                            # safe and avoids the plain-text fallback path from
+                            # doubling pressure on an already exhausted pool.
+                            if _is_pool_timeout_error(send_err) and _send_attempt < 2:
+                                wait = 2 ** _send_attempt
+                                logger.warning(
+                                    "[%s] Telegram pool timeout on send (attempt %d/3), retrying in %ds: %s",
+                                    self.name,
+                                    _send_attempt + 1,
+                                    wait,
+                                    send_err,
+                                )
+                                await asyncio.sleep(wait)
+                                continue
                             raise
                         if _send_attempt < 2:
                             wait = 2 ** _send_attempt
@@ -1203,8 +1224,15 @@ class TelegramAdapter(BasePlatformAdapter):
             # mark as non-retryable so _send_with_retry() doesn't re-send.
             _to = locals().get("_TimedOut")
             err_str = str(e).lower()
-            is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(success=False, error=str(e), retryable=not is_timeout)
+            is_pool_timeout = _is_pool_timeout_error(e)
+            is_timeout = not is_pool_timeout and (
+                (_to and isinstance(e, _to)) or "timed out" in err_str
+            )
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=is_pool_timeout or not is_timeout,
+            )
 
     async def edit_message(
         self,

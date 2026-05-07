@@ -499,6 +499,7 @@ def build_anthropic_client(
     timeout: float = None,
     *,
     drop_context_1m_beta: bool = False,
+    default_headers: Optional[Dict[str, str]] = None,
 ):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -591,6 +592,15 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if isinstance(default_headers, dict) and default_headers:
+        merged_headers = dict(kwargs.get("default_headers") or {})
+        for key, value in default_headers.items():
+            name = str(key or "").strip()
+            if name and value is not None:
+                merged_headers[name] = str(value)
+        if merged_headers:
+            kwargs["default_headers"] = merged_headers
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -1917,5 +1927,4 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 
