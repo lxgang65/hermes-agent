@@ -284,6 +284,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._general_request_pool_drain_lock = asyncio.Lock()
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -476,6 +477,49 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Polling request re-initialize failed (non-fatal)",
                 self.name, exc_info=True,
             )
+
+    async def _drain_general_request_connections(self) -> None:
+        """Reset the httpx connection pool used for Bot API send/edit calls.
+
+        PTB maps httpx.PoolTimeout to telegram.error.TimedOut after the request
+        failed before leaving the process.  On flaky proxy links, stale send/edit
+        requests can occupy every slot in the general Bot API pool. Retrying on
+        the same pool only queues more work, so reset ``_request[1]`` before the
+        retry.
+        """
+        app = getattr(self, "_app", None)
+        if not (app and getattr(app, "bot", None)):
+            return
+        drain_lock = getattr(self, "_general_request_pool_drain_lock", None)
+        if drain_lock is None:
+            drain_lock = asyncio.Lock()
+            self._general_request_pool_drain_lock = drain_lock
+        async with drain_lock:
+            try:
+                # PTB 22.x: _request is (get_updates_request, general_request).
+                general_req = app.bot._request[1]  # noqa: SLF001
+            except Exception:
+                return
+            try:
+                await asyncio.wait_for(general_req.shutdown(), timeout=5.0)
+            except Exception:
+                logger.debug(
+                    "[%s] Telegram general request shutdown failed during pool drain",
+                    self.name,
+                    exc_info=True,
+                )
+            try:
+                await asyncio.wait_for(general_req.initialize(), timeout=5.0)
+                logger.warning(
+                    "[%s] Telegram general request pool drained after pool timeout",
+                    self.name,
+                )
+            except Exception:
+                logger.warning(
+                    "[%s] Telegram general request re-initialize failed after pool timeout",
+                    self.name,
+                    exc_info=True,
+                )
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -1331,9 +1375,10 @@ class TelegramAdapter(BasePlatformAdapter):
                             # safe and avoids the plain-text fallback path from
                             # doubling pressure on an already exhausted pool.
                             if _is_pool_timeout_error(send_err) and _send_attempt < 2:
-                                wait = 2 ** _send_attempt
+                                await self._drain_general_request_connections()
+                                wait = 0.5 * (_send_attempt + 1)
                                 logger.warning(
-                                    "[%s] Telegram pool timeout on send (attempt %d/3), retrying in %ds: %s",
+                                    "[%s] Telegram pool timeout on send (attempt %d/3), drained request pool; retrying in %.1fs: %s",
                                     self.name,
                                     _send_attempt + 1,
                                     wait,
@@ -1401,24 +1446,48 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            try:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
-            except Exception as fmt_err:
-                # "Message is not modified" is a no-op, not an error
-                if "not modified" in str(fmt_err).lower():
+            for edit_attempt in range(3):
+                try:
+                    try:
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            text=formatted,
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+                    except Exception as fmt_err:
+                        fmt_err_str = str(fmt_err).lower()
+                        # "Message is not modified" is a no-op, not an error
+                        if "not modified" in fmt_err_str:
+                            return SendResult(success=True, message_id=message_id)
+                        # Pool timeouts are network/pool failures, not Markdown
+                        # parse failures. Drain before retrying instead of
+                        # issuing a second plain-text request into the same pool.
+                        if _is_pool_timeout_error(fmt_err):
+                            raise
+                        # Fallback only for actual markdown/parse failures.
+                        if "parse" not in fmt_err_str and "markdown" not in fmt_err_str:
+                            raise
+                        await self._bot.edit_message_text(
+                            chat_id=int(chat_id),
+                            message_id=int(message_id),
+                            text=content,
+                        )
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
-            return SendResult(success=True, message_id=message_id)
+                except Exception as edit_err:
+                    if _is_pool_timeout_error(edit_err) and edit_attempt < 2:
+                        await self._drain_general_request_connections()
+                        wait = 0.5 * (edit_attempt + 1)
+                        logger.warning(
+                            "[%s] Telegram pool timeout on edit (attempt %d/3), drained request pool; retrying in %.1fs: %s",
+                            self.name,
+                            edit_attempt + 1,
+                            wait,
+                            edit_err,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    raise
         except Exception as e:
             err_str = str(e).lower()
             # "Message is not modified" — content identical, treat as success

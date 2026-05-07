@@ -331,6 +331,14 @@ async def test_send_retries_pool_timeout():
     adapter = _make_adapter()
 
     attempt = [0]
+    drain_events = []
+
+    class FakeGeneralRequest:
+        async def shutdown(self):
+            drain_events.append("shutdown")
+
+        async def initialize(self):
+            drain_events.append("initialize")
 
     async def mock_send_message(**kwargs):
         attempt[0] += 1
@@ -342,6 +350,9 @@ async def test_send_retries_pool_timeout():
         return SimpleNamespace(message_id=301)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(object(), FakeGeneralRequest()))
+    )
 
     result = await adapter.send(
         chat_id="123",
@@ -351,6 +362,7 @@ async def test_send_retries_pool_timeout():
     assert result.success is True
     assert result.message_id == "301"
     assert attempt[0] == 3
+    assert drain_events == ["shutdown", "initialize", "shutdown", "initialize"]
 
 
 @pytest.mark.asyncio
