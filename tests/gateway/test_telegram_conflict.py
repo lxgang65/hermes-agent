@@ -288,6 +288,111 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_can_preserve_pending_updates_on_start(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"drop_pending_updates_on_start": False},
+    ))
+
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_DROP_PENDING_UPDATES_ON_START", raising=False)
+    monkeypatch.delenv("TELEGRAM_DROP_PENDING_UPDATES_ON_START", raising=False)
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    updater.start_polling.assert_awaited_once()
+    assert updater.start_polling.await_args.kwargs["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
+async def test_connect_pending_updates_env_override(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"drop_pending_updates_on_start": True},
+    ))
+
+    monkeypatch.delenv("TELEGRAM_WEBHOOK_URL", raising=False)
+    monkeypatch.setenv("HERMES_TELEGRAM_DROP_PENDING_UPDATES_ON_START", "false")
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    updater.start_polling.assert_awaited_once()
+    assert updater.start_polling.await_args.kwargs["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
 async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
 

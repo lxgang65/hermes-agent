@@ -358,8 +358,8 @@ class TelegramAdapter(BasePlatformAdapter):
             pass
         return isinstance(error, OSError)
 
-    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
-        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+    @staticmethod
+    def _coerce_bool_value(value: Any, default: bool = False) -> bool:
         if value is None:
             return default
         if isinstance(value, str):
@@ -370,6 +370,20 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _coerce_bool_extra(self, key: str, default: bool = False) -> bool:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        return self._coerce_bool_value(value, default)
+
+    def _drop_pending_updates_on_start(self) -> bool:
+        for env_name in (
+            "HERMES_TELEGRAM_DROP_PENDING_UPDATES_ON_START",
+            "TELEGRAM_DROP_PENDING_UPDATES_ON_START",
+        ):
+            value = os.getenv(env_name)
+            if value is not None:
+                return self._coerce_bool_value(value, True)
+        return self._coerce_bool_extra("drop_pending_updates_on_start", True)
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -879,6 +893,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            drop_pending_updates_on_start = self._drop_pending_updates_on_start()
+            logger.info(
+                "[%s] Telegram startup pending updates: %s",
+                self.name,
+                "dropping" if drop_pending_updates_on_start else "preserving",
+            )
 
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
@@ -917,7 +937,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=drop_pending_updates_on_start,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -950,7 +970,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=drop_pending_updates_on_start,
                     error_callback=_polling_error_callback,
                 )
             

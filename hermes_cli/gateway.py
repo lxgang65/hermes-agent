@@ -1241,8 +1241,37 @@ def print_systemd_scope_conflict_warning() -> None:
 
 def _require_root_for_system_service(action: str) -> None:
     if os.geteuid() != 0:
+        if _reexec_system_gateway_action_with_sudo(action):
+            return
         print(f"System gateway {action} requires root. Re-run with sudo.")
         sys.exit(1)
+
+
+def _reexec_system_gateway_action_with_sudo(action: str) -> bool:
+    """Re-run safe system gateway management commands through passwordless sudo."""
+    if action not in {"start", "stop", "restart", "status"}:
+        return False
+    if os.getenv("HERMES_GATEWAY_AUTO_SUDO", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return False
+
+    hermes_candidates = [
+        "/usr/local/bin/hermes",
+        os.path.realpath(sys.argv[0] or ""),
+        "/home/lxg/.hermes/hermes-agent/venv/bin/hermes",
+    ]
+    hermes_bin = next((p for p in hermes_candidates if p and os.path.exists(p)), None)
+    if not hermes_bin:
+        return False
+
+    cmd = [sudo, "-n", hermes_bin, *sys.argv[1:]]
+    try:
+        os.execv(sudo, cmd)
+    except OSError:
+        return False
 
 
 def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, str]:
@@ -1866,8 +1895,14 @@ def systemd_restart(system: bool = False):
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
+    restart_policy = _read_systemd_unit_properties(
+        system=system,
+        properties=("Restart",),
+    ).get("Restart", "")
+    service_can_self_relaunch = restart_policy != "no"
+
     pid = get_running_pid()
-    if pid is not None and _request_gateway_self_restart(pid):
+    if pid is not None and service_can_self_relaunch and _request_gateway_self_restart(pid):
         import time
         scope_label = _service_scope_label(system).capitalize()
         svc = get_service_name()
@@ -1913,7 +1948,8 @@ def systemd_restart(system: bool = False):
         check=False,
         timeout=30,
     )
-    _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
+    restart_action = "reload-or-restart" if service_can_self_relaunch else "restart"
+    _run_systemctl([restart_action, get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 

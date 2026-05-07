@@ -99,8 +99,9 @@ class TestSystemdServiceRefresh:
         gateway_cli.systemd_restart()
 
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
-        assert calls[:4] == [
+        assert calls[:5] == [
             ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "Restart"],
             ["systemctl", "--user", "show", gateway_cli.get_service_name(), "--no-pager", "--property", "ActiveState,SubState,Result,ExecMainStatus"],
             ["systemctl", "--user", "reset-failed", gateway_cli.get_service_name()],
             ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
@@ -534,6 +535,45 @@ class TestGatewaySystemServiceRouting:
         assert ("self", 654) in calls
         assert any(call[0] == "reset-failed" for call in calls)
         assert any(call[0] == "start" for call in calls)
+        out = capsys.readouterr().out.lower()
+        assert "restarted" in out
+
+    def test_systemd_restart_uses_plain_restart_when_unit_restart_is_disabled(self, monkeypatch, capsys):
+        calls = []
+        svc = gateway_cli.get_service_name()
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        def fake_read_systemd_unit_properties(system=False, properties=("ActiveState",)):
+            if properties == ("Restart",):
+                return {"Restart": "no"}
+            return {}
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "_read_systemd_unit_properties",
+            fake_read_systemd_unit_properties,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: pytest.fail("self-restart should not be requested when Restart=no"),
+        )
+        monkeypatch.setattr(gateway_cli, "_recover_pending_systemd_restart", lambda **kwargs: False)
+
+        def fake_run_systemctl(args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(stdout="", returncode=0)
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+
+        gateway_cli.systemd_restart()
+
+        assert ["reset-failed", svc] in calls
+        assert ["restart", svc] in calls
+        assert ["reload-or-restart", svc] not in calls
         out = capsys.readouterr().out.lower()
         assert "restarted" in out
 
