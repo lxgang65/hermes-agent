@@ -6,6 +6,7 @@ rather than leaving zombie processes or telling users to manually restart
 when launchd will auto-respawn.
 """
 
+import signal
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -463,8 +464,11 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback.
-        kill.assert_called_once()
+        # Graceful drain returned False → SIGTERM fallback; if the mocked
+        # process still appears alive, the survivor sweep force-kills it.
+        kill.assert_any_call(12345, signal.SIGTERM)
+        kill.assert_any_call(12345, signal.SIGKILL)
+        assert kill.call_count == 2
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -885,9 +889,10 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
+        # Manual PID should be stopped, and the survivor sweep may escalate
+        # the same PID if it still appears alive after SIGTERM.
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
-        assert len(manual_kills) == 1
+        assert [c.args[1] for c in manual_kills] == [signal.SIGTERM, signal.SIGKILL]
         # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0

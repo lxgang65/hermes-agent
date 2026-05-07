@@ -4142,7 +4142,13 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
-def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
+def _prompt_api_key(
+    pconfig,
+    existing_key: str,
+    provider_id: str = "",
+    *,
+    prompt_existing: bool = True,
+) -> tuple:
     """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
 
     Handles both first-time entry and the already-configured case.  When a key
@@ -4192,6 +4198,9 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.
+        print()
+        return existing_key, False
+    if not prompt_existing:
         print()
         return existing_key, False
     try:
@@ -4258,7 +4267,10 @@ def _model_flow_kimi(config, current_model=""):
             break
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        prompt_existing=(sys.stdin.isatty() and sys.stdout.isatty()),
     )
     if abort:
         return
@@ -4368,7 +4380,10 @@ def _model_flow_stepfun(config, current_model=""):
             break
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        prompt_existing=(sys.stdin.isatty() and sys.stdout.isatty()),
     )
     if abort:
         return
@@ -4751,7 +4766,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             break
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        prompt_existing=(sys.stdin.isatty() and sys.stdout.isatty()),
     )
     if abort:
         return
@@ -7837,9 +7855,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)
+                        killed_pids.add(pid)
                     except (ProcessLookupError, PermissionError):
                         pass
-                killed_pids.add(pid)
                 relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
@@ -7851,14 +7869,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 except (ProcessLookupError, PermissionError):
                     pass
 
-            if restarted_services or killed_pids:
+            if restarted_services or killed_pids or relaunched_profiles:
                 print()
                 for svc in restarted_services:
                     print(f"  ✓ Restarted {svc}")
                 if relaunched_profiles:
                     names = ", ".join(relaunched_profiles)
                     print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                unmapped_count = len([pid for pid in killed_pids if pid not in profile_processes])
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")

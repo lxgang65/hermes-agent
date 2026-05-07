@@ -196,11 +196,23 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Home Assistant."""
         self._running = False
+
+        # Close the socket first to unblock any pending receive in the listener;
+        # then cancel/await the task.  aiohttp's receive loop can otherwise sit
+        # inside the selector long enough for integration tests and shutdowns to
+        # look hung.
+        ws = self._ws
+        if ws and not ws.closed:
+            try:
+                await asyncio.wait_for(ws.close(), timeout=2.0)
+            except (asyncio.TimeoutError, RuntimeError, Exception):
+                pass
+
         if self._listen_task:
             self._listen_task.cancel()
             try:
-                await self._listen_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._listen_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             self._listen_task = None
 

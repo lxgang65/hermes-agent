@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.config import get_env_value, load_env
+from hermes_cli.config import load_env
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -1402,7 +1402,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         def _is_source_suppressed(_p, _s):  # type: ignore[misc]
             return False
     if provider == "openrouter":
-        # Prefer ~/.hermes/.env over os.environ
+        # Prefer ~/.hermes/.env over os.environ.
         token = _get_env_prefer_dotenv("OPENROUTER_API_KEY")
         if token:
             source = "env:OPENROUTER_API_KEY"
@@ -1440,7 +1440,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         ]
 
     for env_var in env_vars:
-        # Prefer ~/.hermes/.env over os.environ
+        # Prefer ~/.hermes/.env over os.environ.
         token = _get_env_prefer_dotenv(env_var)
         if not token:
             continue
