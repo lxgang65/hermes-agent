@@ -213,6 +213,8 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setenv("TIRITH_ENABLED", "false")
 
         from tools.approval import check_all_command_guards
 

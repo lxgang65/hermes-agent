@@ -63,14 +63,101 @@ def _ensure_discord_mock():
 
     discord_mod = MagicMock()
     discord_mod.Intents.default.return_value = MagicMock()
+    discord_mod.Client = MagicMock
+    discord_mod.File = MagicMock
     discord_mod.DMChannel = type("DMChannel", (), {})
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
+    discord_mod.Message = type("Message", (), {})
+
+    class _FakeAllowedMentions:
+        def __init__(self, *, everyone=False, users=False, roles=False, replied_user=False):
+            self.everyone = everyone
+            self.users = users
+            self.roles = roles
+            self.replied_user = replied_user
+    discord_mod.AllowedMentions = _FakeAllowedMentions
+
+    class _FakeEmbed:
+        def __init__(self, *, title=None, description=None, color=None, **_):
+            self.title = title
+            self.description = description
+            self.color = color
+    discord_mod.Embed = _FakeEmbed
+
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None, url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+    discord_mod.SelectOption = _FakeSelectOption
+    discord_mod.ui = SimpleNamespace(
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
+        button=lambda *a, **k: (lambda fn: fn),
+    )
+    discord_mod.ButtonStyle = SimpleNamespace(
+        success=1, primary=2, secondary=2, danger=3,
+        green=1, grey=2, blurple=2, red=3,
+    )
+    discord_mod.Color = SimpleNamespace(
+        orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
+    )
+    class _FakeGroup:
+        def __init__(self, *, name, description, parent=None):
+            self.name = name
+            self.description = description
+            self.parent = parent
+            self._children = {}
+            if parent is not None:
+                parent.add_command(self)
+        def add_command(self, cmd):
+            self._children[cmd.name] = cmd
+
+    class _FakeCommand:
+        def __init__(self, *, name, description, callback, parent=None):
+            self.name = name
+            self.description = description
+            self.callback = callback
+            self.parent = parent
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=_FakeGroup,
+        Command=_FakeCommand,
     )
     discord_mod.opus.is_loaded.return_value = True
 

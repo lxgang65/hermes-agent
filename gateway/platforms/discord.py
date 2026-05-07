@@ -713,7 +713,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # This replaces the older DISCORD_IGNORE_NO_MENTION logic
                 # with bot-aware filtering that works correctly when multiple
                 # agents share a channel.
-                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                if not self._is_dm_channel(message.channel) and message.mentions:
                     _self_mentioned = (
                         self._client.user is not None
                         and self._client.user in message.mentions
@@ -2189,7 +2189,7 @@ class DiscordAdapter(BasePlatformAdapter):
         an opaque interaction failure rather than a clean rejection.
         """
         chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        in_dm = self._is_dm_channel(chan_obj) if chan_obj is not None else False
 
         # ── Channel scope (mirrors on_message lines 3374-3388) ──
         # DMs aren't channel-gated — DMs follow on_message's DM lockdown
@@ -2203,7 +2203,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(str(chan_id_raw))
                 # Mirror on_message: also test the parent channel for threads
                 # so per-channel allow/deny lists work consistently.
-                if isinstance(chan_obj, discord.Thread):
+                if self._is_thread_channel(chan_obj):
                     parent_id = self._get_parent_channel_id(chan_obj)
                     if parent_id:
                         channel_ids.add(str(parent_id))
@@ -2627,10 +2627,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 return {"name": str(chat_id), "type": "dm"}
 
             # Determine channel type
-            if isinstance(channel, discord.DMChannel):
+            if self._is_dm_channel(channel):
                 chat_type = "dm"
                 name = channel.recipient.name if channel.recipient else str(chat_id)
-            elif isinstance(channel, discord.Thread):
+            elif self._is_thread_channel(channel):
                 chat_type = "thread"
                 name = channel.name
             elif isinstance(channel, discord.TextChannel):
@@ -3277,8 +3277,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
-        is_dm = isinstance(interaction.channel, discord.DMChannel)
-        is_thread = isinstance(interaction.channel, discord.Thread)
+        is_dm = self._is_dm_channel(interaction.channel)
+        is_thread = self._is_thread_channel(interaction.channel)
         thread_id = None
 
         if is_dm:
@@ -3501,7 +3501,7 @@ class DiscordAdapter(BasePlatformAdapter):
         channel = await self._resolve_interaction_channel(interaction)
         if channel is None:
             return {"error": "Could not resolve the current Discord channel."}
-        if isinstance(channel, discord.DMChannel):
+        if self._is_dm_channel(channel):
             return {"error": "Discord threads can only be created inside server text channels, not DMs."}
 
         parent_channel = self._thread_parent_channel(channel)
@@ -3781,12 +3781,42 @@ class DiscordAdapter(BasePlatformAdapter):
             return str(parent_id)
         return None
 
+    @staticmethod
+    def _discord_class_matches(obj: Any, discord_attr: str, class_name: str) -> bool:
+        """Robust isinstance helper for discord.py objects and test doubles.
+
+        Test modules can install lightweight discord mocks before the adapter
+        is imported. Depending on collection order, the class object attached
+        to ``discord.<attr>`` may differ from the base class used by a fixture.
+        Fall back to the MRO class name so fake ``DMChannel``, ``Thread``, and
+        ``ForumChannel`` instances keep the same semantics as real discord.py
+        objects.
+        """
+        if obj is None:
+            return False
+        cls = getattr(discord, discord_attr, None)
+        if isinstance(cls, type):
+            try:
+                if isinstance(obj, cls):
+                    return True
+            except TypeError:
+                pass
+        try:
+            return any(base.__name__ == class_name for base in type(obj).__mro__)
+        except Exception:
+            return False
+
+    def _is_dm_channel(self, channel: Any) -> bool:
+        return self._discord_class_matches(channel, "DMChannel", "DMChannel")
+
+    def _is_thread_channel(self, channel: Any) -> bool:
+        return self._discord_class_matches(channel, "Thread", "Thread")
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
             return False
-        forum_cls = getattr(discord, "ForumChannel", None)
-        if forum_cls and isinstance(channel, forum_cls):
+        if self._discord_class_matches(channel, "ForumChannel", "ForumChannel"):
             return True
         channel_type = getattr(channel, "type", None)
         if channel_type is not None:
@@ -3954,7 +3984,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
-        is_thread = isinstance(message.channel, discord.Thread)
+        is_thread = self._is_thread_channel(message.channel)
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
@@ -3971,7 +4001,7 @@ class DiscordAdapter(BasePlatformAdapter):
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
-        if not isinstance(message.channel, discord.DMChannel):
+        if not self._is_dm_channel(message.channel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
@@ -4019,13 +4049,13 @@ class DiscordAdapter(BasePlatformAdapter):
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
-        if not is_thread and not isinstance(message.channel, discord.DMChannel):
+        if not is_thread and not self._is_dm_channel(message.channel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
+            if auto_thread and not skip_thread and not is_free_channel and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     parent_channel_id = str(message.channel.id)
@@ -4061,7 +4091,7 @@ class DiscordAdapter(BasePlatformAdapter):
         effective_channel = auto_threaded_channel or message.channel
 
         # Determine chat type
-        if isinstance(message.channel, discord.DMChannel):
+        if self._is_dm_channel(message.channel):
             chat_type = "dm"
             chat_name = message.author.name
         elif is_thread:

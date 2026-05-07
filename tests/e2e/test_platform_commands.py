@@ -81,7 +81,7 @@ class TestSlashCommands:
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         # Either shows the mode cycle or tells user to enable it in config
-        assert "verbose" in response_text.lower() or "tool_progress" in response_text
+        assert "verbose" in response_text.lower() or "tool progress" in response_text.lower() or "tool_progress" in response_text
 
     @pytest.mark.asyncio
     async def test_plaintext_restart_gateway_routes_to_safe_restart_command(self, adapter, runner, platform, monkeypatch):
