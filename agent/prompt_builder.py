@@ -172,8 +172,9 @@ MEMORY_GUIDANCE = (
 
 SESSION_SEARCH_GUIDANCE = (
     "Use session_search only when the user explicitly asks about prior/last/old "
-    "conversations, asks to resume or recover historical context, or the current "
-    "answer truly depends on information missing from memory and files. Do not use "
+    "conversations, asks to resume or recover historical context, or relevant cross-session "
+    "context exists and the current answer truly depends on information missing from "
+    "memory and files. Do not use "
     "session_search for simple chat, status checks, current configuration, current "
     "workspace paths, or questions answerable from the active context/files."
 )

@@ -703,7 +703,7 @@ def _parse_wake_gate(script_output: str) -> bool:
     return gate.get("wakeAgent", True) is not False
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> Optional[str]:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:

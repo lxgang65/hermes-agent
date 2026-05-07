@@ -189,8 +189,14 @@ class TestAuthorization:
     """Verify the pipeline handles unauthorized users."""
 
     @pytest.mark.asyncio
-    async def test_unauthorized_user_gets_pairing_response(self, adapter, runner, platform):
+    async def test_unauthorized_user_gets_pairing_response(self, adapter, runner, platform, monkeypatch):
         """Unauthorized DM should trigger pairing code, not a command response."""
+        monkeypatch.delenv(f"{platform.value.upper()}_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv(f"{platform.value.upper()}_GROUP_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv(f"{platform.value.upper()}_GROUP_ALLOWED_CHATS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+        runner.config.platforms[platform].extra["unauthorized_dm_behavior"] = "pair"
+        runner.config.unauthorized_dm_behavior = "pair"
         runner._is_user_authorized = lambda _source: False
 
         event = make_event(platform, "/help")
