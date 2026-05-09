@@ -13,6 +13,7 @@ WITHOUT message_thread_id so the message still reaches the chat.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -100,6 +101,12 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._fatal_error_code = None
+    adapter._fatal_error_message = None
+    adapter._fatal_error_retryable = True
+    adapter._fatal_error_handler = None
+    adapter._general_request_pool_drain_lock = None
+    adapter._delivery_failure_fatal_lock = None
     adapter.platform = Platform.TELEGRAM
     return adapter
 
@@ -363,6 +370,70 @@ async def test_send_retries_pool_timeout():
     assert result.message_id == "301"
     assert attempt[0] == 3
     assert drain_events == ["shutdown", "initialize", "shutdown", "initialize"]
+
+
+@pytest.mark.asyncio
+async def test_send_drains_transient_connect_errors_before_retry():
+    """ConnectError-style failures should reset the general request pool before retry."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+    drain_events = []
+
+    class FakeGeneralRequest:
+        async def shutdown(self):
+            drain_events.append("shutdown")
+
+        async def initialize(self):
+            drain_events.append("initialize")
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] < 3:
+            raise FakeNetworkError("httpx.ConnectError:")
+        return SimpleNamespace(message_id=302)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(object(), FakeGeneralRequest()))
+    )
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await adapter.send(
+            chat_id="123",
+            content="test message",
+        )
+
+    assert result.success is True
+    assert result.message_id == "302"
+    assert attempt[0] == 3
+    assert drain_events == ["shutdown", "initialize", "shutdown", "initialize"]
+
+
+@pytest.mark.asyncio
+async def test_send_marks_exhausted_connect_error_retryable_fatal():
+    """Repeated delivery ConnectErrors should trigger gateway-level reconnect."""
+    adapter = _make_adapter()
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    async def mock_send_message(**kwargs):
+        raise FakeNetworkError("httpx.ConnectError:")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        result = await adapter.send(
+            chat_id="123",
+            content="test message",
+        )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "telegram_send_network_error"
+    assert adapter.fatal_error_retryable is True
+    fatal_handler.assert_awaited_once_with(adapter)
 
 
 @pytest.mark.asyncio

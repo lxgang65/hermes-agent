@@ -3096,6 +3096,29 @@ class GatewayRunner:
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
+
+        # Recover messages that were already consumed from the platform but not
+        # acknowledged by Hermes before a crash/restart.  This complements
+        # Telegram's drop_pending_updates=false: Telegram covers updates not yet
+        # fetched, while this local journal covers fetched-but-not-replied turns.
+        for _adapter in list(self.adapters.values()):
+            _replay = getattr(_adapter, "replay_unacked_inbound", None)
+            if not callable(_replay):
+                continue
+            try:
+                replayed = await _replay()
+                if replayed:
+                    logger.info(
+                        "Replayed %d unacknowledged inbound message(s) for %s",
+                        replayed,
+                        getattr(_adapter, "name", "adapter"),
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Inbound recovery replay failed for %s: %s",
+                    getattr(_adapter, "name", "adapter"),
+                    e,
+                )
         
         # Check if we're restarting after a /update command. If the update is
         # still running, keep watching so we notify once it actually finishes.

@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -1048,6 +1049,20 @@ def merge_pending_message_event(
     follow-ups so a multi-part user thought is not silently truncated to only
     the last queued fragment.
     """
+    def _carry_recovery_ids(target: MessageEvent, incoming: MessageEvent) -> None:
+        ids: list[str] = []
+        for item in (target, incoming):
+            existing_ids = getattr(item, "_hermes_recovery_ids", None)
+            if existing_ids:
+                ids.extend(str(v) for v in existing_ids if v)
+            single = getattr(item, "_hermes_recovery_id", None)
+            if single:
+                ids.append(str(single))
+        deduped = list(dict.fromkeys(ids))
+        if deduped:
+            setattr(target, "_hermes_recovery_ids", deduped)
+            setattr(target, "_hermes_recovery_id", deduped[0])
+
     existing = pending_messages.get(session_key)
     if existing:
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
@@ -1060,6 +1075,7 @@ def merge_pending_message_event(
             existing.media_types.extend(event.media_types)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _carry_recovery_ids(existing, event)
             return
 
         if existing_has_media or incoming_has_media:
@@ -1078,6 +1094,7 @@ def merge_pending_message_event(
                 and event.message_type != MessageType.TEXT
             ):
                 existing.message_type = event.message_type
+            _carry_recovery_ids(existing, event)
             return
 
         if (
@@ -1087,6 +1104,7 @@ def merge_pending_message_event(
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            _carry_recovery_ids(existing, event)
             return
 
     pending_messages[session_key] = event
@@ -1248,6 +1266,7 @@ class BasePlatformAdapter(ABC):
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
+        self._inbound_recovery_active_ids: set[str] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
@@ -1398,6 +1417,178 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def _inbound_recovery_dir(self) -> Path:
+        home = Path(os.getenv("HERMES_HOME") or str(Path.home() / ".hermes"))
+        path = home / "gateway_pending" / "inbound"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _inbound_recovery_id(self, event: MessageEvent, session_key: str) -> str:
+        platform = event.source.platform.value if event.source and event.source.platform else self.platform.value
+        update_id = getattr(event, "platform_update_id", None)
+        message_id = getattr(event, "message_id", None)
+        if update_id is not None:
+            suffix = f"upd-{update_id}"
+        elif message_id:
+            suffix = f"msg-{message_id}"
+        else:
+            suffix = f"ts-{int(datetime.now().timestamp() * 1000)}-{uuid.uuid4().hex[:8]}"
+        raw = f"{platform}:{session_key}:{suffix}"
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)[:220]
+
+    def _serialize_inbound_event(self, event: MessageEvent, session_key: str, recovery_id: str) -> dict:
+        return {
+            "version": 1,
+            "recovery_id": recovery_id,
+            "session_key": session_key,
+            "recorded_at": datetime.now().isoformat(),
+            "platform": event.source.platform.value if event.source and event.source.platform else self.platform.value,
+            "text": event.text,
+            "message_type": event.message_type.value if isinstance(event.message_type, MessageType) else str(event.message_type),
+            "source": event.source.to_dict() if event.source else None,
+            "message_id": event.message_id,
+            "platform_update_id": event.platform_update_id,
+            "media_urls": list(event.media_urls or []),
+            "media_types": list(event.media_types or []),
+            "reply_to_message_id": event.reply_to_message_id,
+            "reply_to_text": event.reply_to_text,
+            "auto_skill": event.auto_skill,
+            "channel_prompt": event.channel_prompt,
+            "internal": bool(event.internal),
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+        }
+
+    def _deserialize_inbound_event(self, data: dict) -> Optional[MessageEvent]:
+        source_data = data.get("source")
+        if not source_data:
+            return None
+        try:
+            source = SessionSource.from_dict(source_data)
+            timestamp_raw = data.get("timestamp")
+            timestamp = datetime.fromisoformat(timestamp_raw) if timestamp_raw else datetime.now()
+            event = MessageEvent(
+                text=str(data.get("text") or ""),
+                message_type=MessageType(data.get("message_type", "text")),
+                source=source,
+                message_id=data.get("message_id"),
+                platform_update_id=data.get("platform_update_id"),
+                media_urls=list(data.get("media_urls") or []),
+                media_types=list(data.get("media_types") or []),
+                reply_to_message_id=data.get("reply_to_message_id"),
+                reply_to_text=data.get("reply_to_text"),
+                auto_skill=data.get("auto_skill"),
+                channel_prompt=data.get("channel_prompt"),
+                internal=bool(data.get("internal", False)),
+                timestamp=timestamp,
+            )
+            recovery_id = data.get("recovery_id")
+            if recovery_id:
+                setattr(event, "_hermes_recovery_id", str(recovery_id))
+                setattr(event, "_hermes_recovery_ids", [str(recovery_id)])
+                setattr(event, "_hermes_replayed", True)
+            return event
+        except Exception:
+            logger.debug("[%s] Failed to deserialize inbound recovery event", self.name, exc_info=True)
+            return None
+
+    def _journal_inbound_event(self, event: MessageEvent, session_key: str) -> Optional[str]:
+        if getattr(event, "internal", False) or event.is_command():
+            return None
+        recovery_id = getattr(event, "_hermes_recovery_id", None)
+        if not recovery_id:
+            recovery_id = self._inbound_recovery_id(event, session_key)
+            setattr(event, "_hermes_recovery_id", recovery_id)
+            setattr(event, "_hermes_recovery_ids", [recovery_id])
+        active_ids = getattr(self, "_inbound_recovery_active_ids", None)
+        if active_ids is None:
+            active_ids = set()
+            self._inbound_recovery_active_ids = active_ids
+        if recovery_id in active_ids and not getattr(event, "_hermes_replayed", False):
+            logger.info("[%s] Ignoring duplicate in-flight inbound event %s", self.name, recovery_id)
+            return "__duplicate__"
+        active_ids.add(recovery_id)
+        path = self._inbound_recovery_dir() / f"{recovery_id}.json"
+        if path.exists():
+            return recovery_id
+        try:
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(
+                json.dumps(
+                    self._serialize_inbound_event(event, session_key, recovery_id),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            tmp.replace(path)
+            logger.debug("[%s] Journaled inbound event for recovery: %s", self.name, recovery_id)
+        except Exception:
+            logger.debug("[%s] Failed to journal inbound event %s", self.name, recovery_id, exc_info=True)
+        return recovery_id
+
+    def _ack_inbound_recovery(self, event: MessageEvent) -> None:
+        ids = list(getattr(event, "_hermes_recovery_ids", None) or [])
+        single = getattr(event, "_hermes_recovery_id", None)
+        if single:
+            ids.append(str(single))
+        ids = list(dict.fromkeys(str(v) for v in ids if v))
+        active_ids = getattr(self, "_inbound_recovery_active_ids", set())
+        for recovery_id in ids:
+            try:
+                (self._inbound_recovery_dir() / f"{recovery_id}.json").unlink(missing_ok=True)
+            except Exception:
+                logger.debug("[%s] Failed to ack inbound recovery %s", self.name, recovery_id, exc_info=True)
+            try:
+                active_ids.discard(recovery_id)
+            except Exception:
+                pass
+
+    def _release_inbound_recovery_claim(self, event: MessageEvent) -> None:
+        active_ids = getattr(self, "_inbound_recovery_active_ids", set())
+        ids = list(getattr(event, "_hermes_recovery_ids", None) or [])
+        single = getattr(event, "_hermes_recovery_id", None)
+        if single:
+            ids.append(str(single))
+        for recovery_id in dict.fromkeys(str(v) for v in ids if v):
+            try:
+                active_ids.discard(recovery_id)
+            except Exception:
+                pass
+
+    async def replay_unacked_inbound(self, *, max_events: int = 20) -> int:
+        if not self._message_handler:
+            return 0
+        base = self._inbound_recovery_dir()
+        platform_value = self.platform.value
+        records = sorted(base.glob(f"{platform_value}_*.json"), key=lambda p: p.stat().st_mtime)
+        replayed = 0
+        active_ids = getattr(self, "_inbound_recovery_active_ids", set())
+        for path in records[:max_events]:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("[%s] Removing unreadable inbound recovery record: %s", self.name, path)
+                try:
+                    path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                continue
+            recovery_id = str(data.get("recovery_id") or path.stem)
+            if recovery_id in active_ids:
+                continue
+            event = self._deserialize_inbound_event(data)
+            if event is None:
+                continue
+            logger.info(
+                "[%s] Replaying unacknowledged inbound message after restart: chat=%s id=%s",
+                self.name,
+                event.source.chat_id if event.source else "?",
+                recovery_id,
+            )
+            await self.handle_message(event)
+            replayed += 1
+        return replayed
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -2220,6 +2411,9 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        if self.has_fatal_error and self.fatal_error_retryable:
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -2245,6 +2439,8 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if self.has_fatal_error and self.fatal_error_retryable:
                     return result
                 error_str = result.error or ""
                 if not (result.retryable or self._is_retryable_error(error_str)):
@@ -2561,6 +2757,9 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+        recovery_id = self._journal_inbound_event(event, session_key)
+        if recovery_id == "__duplicate__":
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
@@ -2969,6 +3168,10 @@ class BasePlatformAdapter(ABC):
                 event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
             )
+            if processing_ok:
+                self._ack_inbound_recovery(event)
+            else:
+                self._release_inbound_recovery_claim(event)
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
@@ -3036,6 +3239,7 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            self._release_inbound_recovery_claim(event)
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #

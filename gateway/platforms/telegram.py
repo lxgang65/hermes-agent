@@ -128,6 +128,17 @@ def _is_pool_timeout_error(error: object) -> bool:
     return "pool timeout" in lowered or "connection pool" in lowered
 
 
+def _is_transient_telegram_connection_error(error: object) -> bool:
+    """Return True for Telegram network errors that benefit from pool reset."""
+    lowered = f"{error.__class__.__name__}: {error}".lower()
+    return (
+        "connecterror" in lowered
+        or "remoteprotocolerror" in lowered
+        or "connection reset" in lowered
+        or "server disconnected" in lowered
+    )
+
+
 # ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
@@ -285,6 +296,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
         self._general_request_pool_drain_lock = asyncio.Lock()
+        self._delivery_failure_fatal_lock = asyncio.Lock()
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -483,9 +495,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
         PTB maps httpx.PoolTimeout to telegram.error.TimedOut after the request
         failed before leaving the process.  On flaky proxy links, stale send/edit
-        requests can occupy every slot in the general Bot API pool. Retrying on
-        the same pool only queues more work, so reset ``_request[1]`` before the
-        retry.
+        requests can also leave CONNECT/TLS state wedged in the general Bot API
+        pool. Retrying on the same pool only queues more work, so reset
+        ``_request[1]`` before the retry.
         """
         app = getattr(self, "_app", None)
         if not (app and getattr(app, "bot", None)):
@@ -511,7 +523,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 await asyncio.wait_for(general_req.initialize(), timeout=5.0)
                 logger.warning(
-                    "[%s] Telegram general request pool drained after pool timeout",
+                    "[%s] Telegram general request pool drained after send/edit network failure",
                     self.name,
                 )
             except Exception:
@@ -520,6 +532,33 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     exc_info=True,
                 )
+
+    async def _mark_delivery_network_failure(self, operation: str, error: object) -> None:
+        """Escalate exhausted send/edit network errors so the gateway rebuilds Telegram.
+
+        Draining the PTB general request pool fixes stale pooled connections, but a
+        wedged proxy/TLS stack can survive local pool resets. After the adapter has
+        already retried and drained, the fastest reliable recovery is to let the
+        gateway replace this Telegram adapter with a fresh Bot/Application.
+        """
+        fatal_lock = getattr(self, "_delivery_failure_fatal_lock", None)
+        if fatal_lock is None:
+            fatal_lock = asyncio.Lock()
+            self._delivery_failure_fatal_lock = fatal_lock
+        async with fatal_lock:
+            if getattr(self, "_fatal_error_message", None):
+                return
+            message = (
+                f"Telegram {operation} failed after request-pool drain/retries. "
+                f"Rebuilding Telegram connection. Last error: {error}"
+            )
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error(
+                f"telegram_{operation}_network_error",
+                message,
+                retryable=True,
+            )
+            await self._notify_fatal_error()
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -1388,8 +1427,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                             raise
                         if _send_attempt < 2:
+                            if _is_transient_telegram_connection_error(send_err):
+                                await self._drain_general_request_connections()
                             wait = 2 ** _send_attempt
-                            logger.warning("[%s] Network error on send (attempt %d/3), retrying in %ds: %s",
+                            logger.warning("[%s] Network error on send (attempt %d/3), drained request pool; retrying in %ds: %s",
                                            self.name, _send_attempt + 1, wait, send_err)
                             await asyncio.sleep(wait)
                         else:
@@ -1424,6 +1465,9 @@ class TelegramAdapter(BasePlatformAdapter):
             _to = locals().get("_TimedOut")
             err_str = str(e).lower()
             is_pool_timeout = _is_pool_timeout_error(e)
+            should_rebuild_delivery_client = is_pool_timeout or _is_transient_telegram_connection_error(e)
+            if should_rebuild_delivery_client:
+                await self._mark_delivery_network_failure("send", e)
             is_timeout = not is_pool_timeout and (
                 (_to and isinstance(e, _to)) or "timed out" in err_str
             )
@@ -1475,11 +1519,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as edit_err:
-                    if _is_pool_timeout_error(edit_err) and edit_attempt < 2:
+                    if (
+                        _is_pool_timeout_error(edit_err)
+                        or _is_transient_telegram_connection_error(edit_err)
+                    ) and edit_attempt < 2:
                         await self._drain_general_request_connections()
                         wait = 0.5 * (edit_attempt + 1)
                         logger.warning(
-                            "[%s] Telegram pool timeout on edit (attempt %d/3), drained request pool; retrying in %.1fs: %s",
+                            "[%s] Telegram network error on edit (attempt %d/3), drained request pool; retrying in %.1fs: %s",
                             self.name,
                             edit_attempt + 1,
                             wait,
@@ -1487,6 +1534,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         )
                         await asyncio.sleep(wait)
                         continue
+                    if _is_pool_timeout_error(edit_err) or _is_transient_telegram_connection_error(edit_err):
+                        await self._mark_delivery_network_failure("edit", edit_err)
                     raise
         except Exception as e:
             err_str = str(e).lower()

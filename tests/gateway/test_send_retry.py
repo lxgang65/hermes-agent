@@ -191,6 +191,32 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
+    async def test_retryable_fatal_adapter_stops_outer_send_retries(self):
+        """If an adapter already requested reconnect, do not pile on more sends."""
+        adapter = _StubAdapter()
+
+        async def send_and_mark_fatal(chat_id, content, reply_to=None, metadata=None, **kwargs):
+            adapter._send_calls.append((chat_id, content))
+            adapter._set_fatal_error(
+                "telegram_send_network_error",
+                "rebuilding Telegram connection",
+                retryable=True,
+            )
+            return SendResult(
+                success=False,
+                error="httpx.ConnectError:",
+                retryable=True,
+            )
+
+        adapter.send = send_and_mark_fatal
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+
+        assert result.success is False
+        assert len(adapter._send_calls) == 1
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
         """If error switches from network to formatting mid-retry, fall through to plain-text fallback."""
         adapter = _StubAdapter()
