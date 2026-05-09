@@ -474,11 +474,11 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         restart.assert_called_once_with("coder", 12345)
         graceful.assert_called_once()
-        # Graceful drain returned False → SIGTERM fallback; if the mocked
-        # process still appears alive, the survivor sweep force-kills it.
+        # Graceful drain returned False → SIGTERM fallback. The second
+        # find_gateway_pids() result simulates the process disappearing after
+        # SIGTERM, so the survivor sweep must not escalate to SIGKILL.
         kill.assert_any_call(12345, signal.SIGTERM)
-        kill.assert_any_call(12345, signal.SIGKILL)
-        assert kill.call_count == 2
+        assert kill.call_count == 1
         assert "Restarting manual gateway profile(s): coder" in captured
 
     @patch("shutil.which", return_value=None)
@@ -958,10 +958,9 @@ class TestServicePidExclusion:
         )
 
         # Survivor sweep (#17648) re-queries ``find_gateway_pids`` after
-         # SIGTERM. ``os.kill`` is mocked, so the PID never "dies" — track
-         # the killed-via-SIGTERM PIDs ourselves and exclude them on later
-         # calls to simulate the OS reaping the process. Without this the
-         # sweep escalates with SIGKILL and ``manual_kills == 2`` instead of 1.
+        # SIGTERM. Track killed-via-SIGTERM PIDs and exclude them on later
+        # calls to simulate the OS reaping the process, so no SIGKILL is
+        # needed for a process that already disappeared cleanly.
         _killed_pids: set[int] = set()
 
         def fake_find(exclude_pids=None, all_profiles=False):
@@ -980,10 +979,10 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be stopped, and the survivor sweep may escalate
-        # the same PID if it still appears alive after SIGTERM.
+        # Manual PID should be stopped once. The fake finder hides it after
+        # SIGTERM, so the survivor sweep must not force-kill it.
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
-        assert [c.args[1] for c in manual_kills] == [signal.SIGTERM, signal.SIGKILL]
+        assert [c.args[1] for c in manual_kills] == [signal.SIGTERM]
         # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0
