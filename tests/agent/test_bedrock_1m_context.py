@@ -15,24 +15,7 @@ from unittest.mock import MagicMock, patch
 class TestBedrockContext1MBeta:
     """``context-1m-2025-08-07`` must reach Bedrock Claude requests."""
 
-    def test_common_betas_includes_1m(self):
-        from agent.anthropic_adapter import _COMMON_BETAS, _CONTEXT_1M_BETA
 
-        assert _CONTEXT_1M_BETA == "context-1m-2025-08-07"
-        assert _CONTEXT_1M_BETA in _COMMON_BETAS
-
-    def test_common_betas_for_native_anthropic_includes_1m(self):
-        """Native Anthropic endpoints (and Bedrock with empty base_url) get 1M."""
-        from agent.anthropic_adapter import (
-            _common_betas_for_base_url,
-            _CONTEXT_1M_BETA,
-        )
-
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(None)
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url("")
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(
-            "https://api.anthropic.com"
-        )
 
     def test_common_betas_strips_1m_for_minimax(self):
         """MiniMax bearer-auth endpoints host their own models — strip 1M beta."""

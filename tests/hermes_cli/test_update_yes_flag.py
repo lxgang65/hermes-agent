@@ -115,11 +115,14 @@ class TestUpdateYesConfigMigration:
 
         args = SimpleNamespace(yes=False)
 
-        with patch("builtins.input", return_value="n") as mock_input, patch(
-            "hermes_cli.main.sys"
-        ) as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
-            mock_sys.stdout.isatty.return_value = True
+        # Patch ``sys.stdin.isatty`` and ``sys.stdout.isatty`` directly on the
+        # real ``sys`` module instead of replacing ``hermes_cli.main.sys`` with
+        # a MagicMock. The MagicMock approach was flaky under ``pytest-xdist``.
+        import sys as _sys
+
+        with patch("builtins.input", return_value="n") as mock_input, patch.object(
+            _sys.stdin, "isatty", return_value=True
+        ), patch.object(_sys.stdout, "isatty", return_value=True):
             _main().cmd_update(args)
             # The user was actually prompted.
             assert mock_input.called

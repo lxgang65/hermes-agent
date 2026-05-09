@@ -106,6 +106,12 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
 
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
+    # The TUI workspace manifests must be present so ``npm install`` can
+    # resolve dependencies. The bundled ``hermes-ink`` workspace package is
+    # now COPIED into the image as a whole tree (not just its lockfile)
+    # because it's referenced as a ``file:`` workspace dependency from
+    # ``ui-tui/package.json`` — copying the tree avoids npm stopping at a
+    # bare ``package.json`` shell.
     assert "ui-tui/package.json" in dockerfile_text
     assert "ui-tui/package-lock.json" in dockerfile_text
     assert "COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/" in dockerfile_text
