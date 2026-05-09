@@ -8862,6 +8862,7 @@ class AIAgent:
                 base_url=getattr(self, "_anthropic_base_url", None),
                 fast_mode=(self.request_overrides or {}).get("speed") == "fast",
                 drop_context_1m_beta=bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+                include_context_1m_beta=(getattr(self, "provider", None) == "bedrock"),
             )
 
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.

@@ -1866,6 +1866,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    include_context_1m_beta: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1904,6 +1905,12 @@ def build_anthropic_kwargs(
     fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
     Currently only supported on native Anthropic endpoints (not third-party
     compatible ones).
+
+    When *include_context_1m_beta* is True, per-request beta headers include
+    ``context-1m-2025-08-07``. Bedrock's Anthropic SDK client carries that beta
+    in ``default_headers``, but Anthropic per-request ``extra_headers`` replace
+    the client-level ``anthropic-beta`` value, so fast-mode requests must opt in
+    explicitly to avoid dropping Bedrock back to the 200K context window.
     """
     system, anthropic_messages = convert_messages_to_anthropic(
         messages, base_url=base_url, model=model
@@ -2064,6 +2071,8 @@ def build_anthropic_kwargs(
             base_url,
             drop_context_1m_beta=drop_context_1m_beta,
         ))
+        if include_context_1m_beta and not drop_context_1m_beta and _CONTEXT_1M_BETA not in betas:
+            betas.append(_CONTEXT_1M_BETA)
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)

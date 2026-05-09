@@ -77,9 +77,11 @@ class TestBedrockContext1MBeta:
             max_tokens=1024,
             reasoning_config=None,
             is_oauth=False,
-            # Empty base_url mirrors AnthropicBedrock (no HTTP base URL)
+            # Empty base_url mirrors AnthropicBedrock (no HTTP base URL).
+            # include_context_1m_beta mirrors the run_agent Bedrock path.
             base_url=None,
             fast_mode=True,
+            include_context_1m_beta=True,
         )
         beta_header = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
         assert "context-1m-2025-08-07" in beta_header, (
